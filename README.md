@@ -115,6 +115,13 @@ python -m hunter_sdk
 # Swagger UI: http://127.0.0.1:8000/docs
 ```
 
+The service binds to `127.0.0.1:8000` by default. Override via env vars
+when running outside localhost, e.g. inside a container:
+
+```bash
+APP_HOST=0.0.0.0 APP_PORT=8080 python -m hunter_sdk
+```
+
 ## Tests
 
 ```bash
