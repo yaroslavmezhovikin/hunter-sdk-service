@@ -24,6 +24,19 @@ dev = [
     "asgi-lifespan>=2.1.0",
     "mypy>=1.8.0",
     "wemake-python-styleguide>=0.18.0",
+    "flake8-bugbear",
+    "flake8-bandit",
+    "flake8-comprehensions",
+    "flake8-commas",
+    "flake8-quotes",
+    "flake8-docstrings",
+    "flake8-eradicate",
+    "flake8-isort",
+    "flake8-rst-docstrings",
+    "flake8-string-format",
+    "flake8-broken-line",
+    "pep8-naming",
+    "darglint",
 ]
 
 [build-system]

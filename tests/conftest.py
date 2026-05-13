@@ -7,11 +7,13 @@ import pytest
 import pytest_asyncio
 import respx
 
-from hunter_sdk.sdk.client import HunterClient
+from hunter_sdk.sdk.transport import HunterTransport
 from hunter_sdk.storage.repositories.memory import InMemoryVerificationRepository
 
 API_KEY: Final[str] = 'test-api-key'
 BASE_URL: Final[str] = 'https://api.hunter.io'
+
+_TIMEOUT_SECONDS: Final[float] = 5.0
 
 
 @pytest.fixture
@@ -22,10 +24,10 @@ def respx_mock() -> Iterator[respx.MockRouter]:
 
 
 @pytest_asyncio.fixture
-async def hunter_client() -> AsyncIterator[HunterClient]:
-    """Yield a Hunter SDK client backed by a real httpx async transport."""
-    async with httpx.AsyncClient(timeout=5.0) as http_client:
-        yield HunterClient(api_key=API_KEY, base_url=BASE_URL, http_client=http_client)
+async def transport() -> AsyncIterator[HunterTransport]:
+    """Yield a transport backed by a real httpx async client."""
+    async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as http_client:
+        yield HunterTransport(api_key=API_KEY, base_url=BASE_URL, http_client=http_client)
 
 
 @pytest.fixture

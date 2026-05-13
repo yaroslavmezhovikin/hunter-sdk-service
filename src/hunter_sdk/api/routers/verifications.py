@@ -1,24 +1,25 @@
-"""HTTP endpoints exposing the verification service."""
+"""HTTP endpoints exposing verification operations and stored records.
 
-from typing import Final
+Operations that need the Hunter.io API go through ``VerificationService``;
+pure storage queries (list / get / delete) go straight to the repository.
+"""
+
+from typing import Annotated, Final
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, HTTPException, Query, Response, status
 
-from hunter_sdk.api.dependencies import get_verification_service
-from hunter_sdk.api.schemas import (
-    DomainSearchRequest,
-    FindEmailRequest,
-    VerificationResponse,
-    VerifyEmailRequest,
-)
+from hunter_sdk.api.dependencies import RepositoryDep, ServiceDep
+from hunter_sdk.api.schemas import DomainSearchRequest, FindEmailRequest, VerificationResponse, VerifyEmailRequest
 from hunter_sdk.sdk.exceptions import HunterAPIError, HunterTimeoutError
-from hunter_sdk.services.verification import VerificationService
 
 router = APIRouter(prefix='/verifications', tags=['verifications'])
 
 _MAX_PAGE_SIZE: Final[int] = 200
 _DEFAULT_PAGE_SIZE: Final[int] = 50
+
+LimitQuery = Annotated[int, Query(gt=0, le=_MAX_PAGE_SIZE)]
+OffsetQuery = Annotated[int, Query(ge=0)]
 
 
 def _translate_sdk_errors(exc: Exception) -> HTTPException:
@@ -36,7 +37,7 @@ def _translate_sdk_errors(exc: Exception) -> HTTPException:
 )
 async def verify_email_endpoint(
     body: VerifyEmailRequest,
-    service: VerificationService = Depends(get_verification_service),
+    service: ServiceDep,
 ) -> VerificationResponse:
     """Verify an email address and persist the result."""
     try:
@@ -53,7 +54,7 @@ async def verify_email_endpoint(
 )
 async def find_email_endpoint(
     body: FindEmailRequest,
-    service: VerificationService = Depends(get_verification_service),
+    service: ServiceDep,
 ) -> VerificationResponse:
     """Find an email for a person at a given domain and persist the result."""
     try:
@@ -70,7 +71,7 @@ async def find_email_endpoint(
 )
 async def search_domain_endpoint(
     body: DomainSearchRequest,
-    service: VerificationService = Depends(get_verification_service),
+    service: ServiceDep,
 ) -> VerificationResponse:
     """Search public emails for a domain and persist the result."""
     try:
@@ -82,22 +83,22 @@ async def search_domain_endpoint(
 
 @router.get('', response_model=list[VerificationResponse])
 async def list_verifications_endpoint(
-    limit: int = Query(default=_DEFAULT_PAGE_SIZE, gt=0, le=_MAX_PAGE_SIZE),
-    offset: int = Query(default=0, ge=0),
-    service: VerificationService = Depends(get_verification_service),
+    repository: RepositoryDep,
+    limit: LimitQuery = _DEFAULT_PAGE_SIZE,
+    offset: OffsetQuery = 0,
 ) -> list[VerificationResponse]:
     """List stored verifications, newest first."""
-    records = await service.list_all(limit=limit, offset=offset)
+    records = await repository.list_all(limit=limit, offset=offset)
     return [VerificationResponse.from_entity(record) for record in records]
 
 
 @router.get('/{record_id}', response_model=VerificationResponse)
 async def get_verification_endpoint(
     record_id: UUID,
-    service: VerificationService = Depends(get_verification_service),
+    repository: RepositoryDep,
 ) -> VerificationResponse:
     """Return a single stored verification by id."""
-    record = await service.get(record_id)
+    record = await repository.get(record_id)
     if record is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='not_found')
     return VerificationResponse.from_entity(record)
@@ -106,10 +107,10 @@ async def get_verification_endpoint(
 @router.delete('/{record_id}', status_code=status.HTTP_204_NO_CONTENT)
 async def delete_verification_endpoint(
     record_id: UUID,
-    service: VerificationService = Depends(get_verification_service),
+    repository: RepositoryDep,
 ) -> Response:
     """Delete a stored verification by id."""
-    deleted = await service.delete(record_id)
+    deleted = await repository.delete(record_id)
     if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='not_found')
     return Response(status_code=status.HTTP_204_NO_CONTENT)

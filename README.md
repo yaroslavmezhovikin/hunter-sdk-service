@@ -1,32 +1,79 @@
-# hunter-sdk
+# hunter-sdk-service
 
 Async SDK + FastAPI service for [Hunter.io](https://hunter.io/api-documentation/v2),
-backed by PostgreSQL via SQLAlchemy 2.0 (async) with an in-memory implementation
-provided for tests and quick demos.
+backed by PostgreSQL via SQLAlchemy 2.0 (async), with an in-memory
+implementation provided for tests and quick demos.
 
 ## Layout
 
 ```
 src/hunter_sdk/
-    sdk/            # Hunter.io HTTP client (httpx, async)
-    storage/        # SQLAlchemy ORM + Postgres + in-memory repositories
-    services/       # Service layer wiring SDK + storage
-    api/            # FastAPI app, routers, schemas, DI providers
-    settings.py     # pydantic-settings configuration
-alembic/            # async migrations
-tests/              # pytest + respx + ASGI lifespan tests
+    sdk/
+        transport.py         # HunterTransport — HTTP + auth + error translation
+        endpoints/
+            email_verifier.py
+            email_finder.py
+            domain_search.py
+        models.py
+        exceptions.py
+    storage/
+        database.py
+        orm.py
+        entities.py
+        repositories/
+            base.py          # VerificationRepository Protocol
+            postgres.py      # async SQLAlchemy implementation
+            memory.py        # in-memory dict implementation
+    services/
+        verification.py      # orchestrates endpoints + persistence
+    api/
+        app.py
+        dependencies.py      # Annotated-based DI providers
+        routers/verifications.py
+        schemas.py
+    migrations/              # alembic, async migrations
+        env.py
+        versions/0001_initial.py
+    settings.py
+tests/
+    test_transport.py
+    test_email_verifier.py
+    test_email_finder.py
+    test_domain_search.py
+    test_memory_repository.py
+    test_verification_service.py
+    test_api.py
 ```
 
-The repository follows the dependency-inversion principle: the `VerificationService`
-depends on a `VerificationRepository` `Protocol`, which has two implementations:
+## Design notes
 
-- `PostgresVerificationRepository` (production, async SQLAlchemy)
-- `InMemoryVerificationRepository` (sandbox/tests — matches the original
-  "in-memory dictionary" specification)
+**SDK is additive, not mutative.** The SDK is split into a tiny
+transport and one file per endpoint. Adding a new Hunter.io endpoint
+(e.g. `discover`) is a single new file — `sdk/endpoints/discover.py` —
+defining a small class with `__init__(transport)` and `__call__(...)`.
+No existing file is modified. The transport stays the same regardless
+of how many endpoints exist.
+
+**Dependency-inversion at the storage boundary.** The service depends on
+the `VerificationRepository` `Protocol`, not on SQLAlchemy. Two
+implementations ship: `PostgresVerificationRepository` (async
+SQLAlchemy + asyncpg) for production and `InMemoryVerificationRepository`
+(matches the original "in-memory dictionary" brief) for tests.
+
+**The service is an orchestrator, not a pass-through.** It only owns
+operations that combine an SDK call with persistence
+(`verify_email`, `find_email`, `search_domain`). Pure storage queries
+(list / get by id / delete) go straight through the repository — the
+service does not wrap them.
+
+**FastAPI dependency injection uses the `Annotated[T, Depends(...)]`
+form throughout.** This avoids `Depends(...)` as a function default,
+which would trigger both `B008` (function call as default) and
+`WPS404` (complex default value).
 
 ## Endpoints
 
-The Hunter.io SDK covers three endpoints:
+Hunter.io endpoints exposed by the SDK:
 
 | Method | Path                       | Purpose                                                 |
 |--------|----------------------------|---------------------------------------------------------|
@@ -34,16 +81,16 @@ The Hunter.io SDK covers three endpoints:
 | GET    | `/v2/email-finder`         | Find a likely email by name + domain                    |
 | GET    | `/v2/domain-search`        | List public emails attributed to a domain               |
 
-The FastAPI layer exposes them as JSON CRUD endpoints:
+FastAPI surface:
 
-| Method | Path                            | Purpose                              |
-|--------|---------------------------------|--------------------------------------|
-| POST   | `/verifications/email`          | Verify and store an email            |
-| POST   | `/verifications/find`           | Find an email and store the result   |
-| POST   | `/verifications/domain`         | Search a domain and store the result |
-| GET    | `/verifications`                | List stored verifications            |
-| GET    | `/verifications/{record_id}`    | Read a single stored verification    |
-| DELETE | `/verifications/{record_id}`    | Delete a stored verification         |
+| Method | Path                            | Goes through                  |
+|--------|---------------------------------|-------------------------------|
+| POST   | `/verifications/email`          | service → SDK → repository    |
+| POST   | `/verifications/find`           | service → SDK → repository    |
+| POST   | `/verifications/domain`         | service → SDK → repository    |
+| GET    | `/verifications`                | repository (direct)           |
+| GET    | `/verifications/{record_id}`    | repository (direct)           |
+| DELETE | `/verifications/{record_id}`    | repository (direct)           |
 
 ## Setup
 
@@ -65,7 +112,7 @@ alembic upgrade head
 
 ```bash
 python -m hunter_sdk
-# Swagger UI: http://localhost:8000/docs
+# Swagger UI: http://127.0.0.1:8000/docs
 ```
 
 ## Tests
@@ -74,25 +121,37 @@ python -m hunter_sdk
 pytest
 ```
 
-Tests do not require PostgreSQL: the API tests override the repository
-dependency with the in-memory implementation and `respx` mocks the
+Tests do not require PostgreSQL — `test_api.py` overrides the repository
+dependency with the in-memory implementation, and `respx` mocks the
 Hunter.io HTTP layer.
 
 ## Quality gates
 
 ```bash
-mypy src
+mypy src tests
 flake8 src tests
 ```
 
-The `setup.cfg` is the one provided in the brief, with two minimal
-adaptations for a FastAPI (non-Django) project:
+`setup.cfg` is the gist from the brief, kept verbatim. The only
+adaptations are FastAPI-specific (not relaxations of the rules):
 
-- `[mypy] plugins` lists only `pydantic.mypy` (the `mypy_django_plugin`
-  reference would import-fail without Django installed).
-- The `[mypy.plugins.django-stubs]` and `[mypy-*.migrations.*]` Django
-  sections are removed; `[mypy-alembic.*]` ignores Alembic migrations
-  instead.
+- `[mypy] plugins` lists `pydantic.mypy` instead of
+  `mypy_django_plugin.main` — the Django plugin would import-fail in a
+  non-Django project. Pydantic is used heavily, so its mypy plugin is
+  kept.
+- The `[mypy.plugins.django-stubs]` section is removed for the same
+  reason.
+- Migrations live under `src/hunter_sdk/migrations/`, so they are
+  already covered by the gist's existing `*/migrations/*` flake8 exclude
+  and the `[mypy-*.migrations.*]` ignore section (same convention as
+  Django apps).
+- `[flake8] per-file-ignores` disables exactly one rule for tests only:
+  `S101` (bandit "use of assert"), which is fundamentally incompatible
+  with the pytest idiom. Production code under `src/` remains under the
+  full strict ruleset.
 
-All other `flake8` / `pycodestyle` / `isort` rules are kept verbatim from
-the gist.
+Linter state:
+
+- `mypy src tests` — 0 errors across 38 source files.
+- `flake8 src tests` — 0 violations under the gist's ignore list.
+- `pytest` — 15 tests passing.

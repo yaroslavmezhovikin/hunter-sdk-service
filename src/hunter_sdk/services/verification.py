@@ -1,9 +1,15 @@
-"""High-level verification service: calls the SDK and stores the result."""
+"""Verification service: orchestrates Hunter.io endpoints and persistence.
 
-from typing import Any, Final, Mapping
-from uuid import UUID
+Pure CRUD on stored records lives on the repository — the service only
+exists to combine an outbound API call with persistence of its result.
+"""
 
-from hunter_sdk.sdk.client import HunterClient
+from typing import Final
+
+from hunter_sdk.sdk.endpoints.domain_search import DomainSearch
+from hunter_sdk.sdk.endpoints.email_finder import EmailFinder
+from hunter_sdk.sdk.endpoints.email_verifier import EmailVerifier
+from hunter_sdk.sdk.transport import HunterTransport
 from hunter_sdk.storage.entities import NewVerification, VerificationRecord
 from hunter_sdk.storage.repositories.base import VerificationRepository
 
@@ -13,25 +19,27 @@ OPERATION_DOMAIN_SEARCH: Final[str] = 'domain_search'
 
 
 class VerificationService:
-    """Orchestrates Hunter.io API calls and persistence of their results."""
+    """Calls a Hunter.io endpoint, then persists the result via the repository."""
 
     def __init__(
         self,
-        sdk: HunterClient,
+        transport: HunterTransport,
         repository: VerificationRepository,
     ) -> None:
-        """Bind the service to an SDK client and a repository."""
-        self._sdk = sdk
+        """Wire the service to a transport and a repository."""
         self._repository = repository
+        self._email_verifier = EmailVerifier(transport)
+        self._email_finder = EmailFinder(transport)
+        self._domain_search = DomainSearch(transport)
 
     async def verify_email(self, email: str) -> VerificationRecord:
         """Verify ``email`` and persist the response."""
-        verification = await self._sdk.verify_email(email)
-        return await self._persist(
-            OPERATION_VERIFY_EMAIL,
-            {'email': email},
-            verification.model_dump(),
-        )
+        verification = await self._email_verifier(email=email)
+        return await self._repository.create(NewVerification(
+            operation=OPERATION_VERIFY_EMAIL,
+            query={'email': email},
+            response=verification.model_dump(),
+        ))
 
     async def find_email(
         self,
@@ -40,40 +48,22 @@ class VerificationService:
         last_name: str,
     ) -> VerificationRecord:
         """Find an email for ``first_name last_name`` at ``domain`` and persist it."""
-        finding = await self._sdk.find_email(domain, first_name, last_name)
-        return await self._persist(
-            OPERATION_FIND_EMAIL,
-            {'domain': domain, 'first_name': first_name, 'last_name': last_name},
-            finding.model_dump(),
+        finding = await self._email_finder(
+            domain=domain,
+            first_name=first_name,
+            last_name=last_name,
         )
+        return await self._repository.create(NewVerification(
+            operation=OPERATION_FIND_EMAIL,
+            query={'domain': domain, 'first_name': first_name, 'last_name': last_name},
+            response=finding.model_dump(),
+        ))
 
     async def search_domain(self, domain: str) -> VerificationRecord:
         """Search public emails for ``domain`` and persist the response."""
-        search = await self._sdk.search_domain(domain)
-        return await self._persist(
-            OPERATION_DOMAIN_SEARCH,
-            {'domain': domain},
-            search.model_dump(),
-        )
-
-    async def get(self, record_id: UUID) -> VerificationRecord | None:
-        """Return a single stored verification."""
-        return await self._repository.get(record_id)
-
-    async def list_all(self, *, limit: int = 50, offset: int = 0) -> list[VerificationRecord]:
-        """List stored verifications."""
-        return await self._repository.list_all(limit=limit, offset=offset)
-
-    async def delete(self, record_id: UUID) -> bool:
-        """Delete a stored verification."""
-        return await self._repository.delete(record_id)
-
-    async def _persist(
-        self,
-        operation: str,
-        query: Mapping[str, Any],
-        response: Mapping[str, Any],
-    ) -> VerificationRecord:
-        return await self._repository.create(
-            NewVerification(operation=operation, query=query, response=response),
-        )
+        search_result = await self._domain_search(domain=domain)
+        return await self._repository.create(NewVerification(
+            operation=OPERATION_DOMAIN_SEARCH,
+            query={'domain': domain},
+            response=search_result.model_dump(),
+        ))

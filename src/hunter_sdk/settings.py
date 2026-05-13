@@ -36,7 +36,7 @@ class AppSettings(BaseSettings):
 
     model_config = SettingsConfigDict(env_prefix='APP_', env_file='.env', extra='ignore')
 
-    host: str = '0.0.0.0'
+    host: str = '127.0.0.1'
     port: int = Field(default=_DEFAULT_PORT, gt=0, lt=_MAX_PORT_EXCLUSIVE)
     log_level: str = 'INFO'
 

@@ -1,4 +1,10 @@
-"""Asynchronous Hunter.io API client."""
+"""HTTP transport for the Hunter.io API.
+
+The transport is intentionally tiny: it owns the base URL, attaches the
+API key, performs a GET and translates transport-level failures into the
+SDK's own exceptions. Every endpoint object reuses one transport
+instance — none of them need their own HTTP logic.
+"""
 
 from types import TracebackType
 from typing import Any, Final, Mapping
@@ -6,32 +12,28 @@ from typing import Any, Final, Mapping
 import httpx
 
 from hunter_sdk.sdk.exceptions import HunterAPIError, HunterTimeoutError
-from hunter_sdk.sdk.models import DomainSearchResult, EmailFinding, EmailVerification
-
-_VERIFIER_PATH: Final[str] = '/v2/email-verifier'
-_FINDER_PATH: Final[str] = '/v2/email-finder'
-_DOMAIN_PATH: Final[str] = '/v2/domain-search'
 
 _HTTP_BAD_REQUEST: Final[int] = 400
+_DEFAULT_TIMEOUT_SECONDS: Final[float] = 10.0
 
 
-class HunterClient:
-    """Async client wrapping a small subset of the Hunter.io REST API."""
+class HunterTransport:
+    """Async HTTP transport for the Hunter.io REST API."""
 
     def __init__(
         self,
         api_key: str,
         base_url: str = 'https://api.hunter.io',
-        timeout: float = 10.0,
+        timeout: float = _DEFAULT_TIMEOUT_SECONDS,
         http_client: httpx.AsyncClient | None = None,
     ) -> None:
-        """Create a client. Pass ``http_client`` to share an external session."""
+        """Bind the transport to an API key and optional shared ``http_client``."""
         self._api_key = api_key
         self._base_url = base_url.rstrip('/')
         self._owns_client = http_client is None
         self._client = http_client or httpx.AsyncClient(timeout=timeout)
 
-    async def __aenter__(self) -> 'HunterClient':
+    async def __aenter__(self) -> 'HunterTransport':
         """Enter an async context manager."""
         return self
 
@@ -41,7 +43,7 @@ class HunterClient:
         exc: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        """Close the underlying HTTP client when leaving the context."""
+        """Close the underlying HTTP client on exit."""
         await self.aclose()
 
     async def aclose(self) -> None:
@@ -49,34 +51,12 @@ class HunterClient:
         if self._owns_client:
             await self._client.aclose()
 
-    async def verify_email(self, email: str) -> EmailVerification:
-        """Verify a single email address."""
-        record = await self._get(_VERIFIER_PATH, {'email': email})
-        return EmailVerification.model_validate(record)
-
-    async def find_email(
-        self,
-        domain: str,
-        first_name: str,
-        last_name: str,
-    ) -> EmailFinding:
-        """Find the most likely email for a person at a given domain."""
-        record = await self._get(
-            _FINDER_PATH,
-            {'domain': domain, 'first_name': first_name, 'last_name': last_name},
-        )
-        return EmailFinding.model_validate(record)
-
-    async def search_domain(self, domain: str) -> DomainSearchResult:
-        """List public emails attributed to a domain."""
-        record = await self._get(_DOMAIN_PATH, {'domain': domain})
-        return DomainSearchResult.model_validate(record)
-
-    async def _get(
+    async def get(
         self,
         path: str,
         query: Mapping[str, str],
     ) -> Mapping[str, Any]:
+        """Perform a GET, validate the response and return the ``data`` payload."""
         request_query = {**query, 'api_key': self._api_key}
         url = '{0}{1}'.format(self._base_url, path)
         try:

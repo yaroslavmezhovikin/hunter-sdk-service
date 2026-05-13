@@ -14,6 +14,6 @@ class HunterAPIError(HunterError):
 
     def __init__(self, status_code: int, message: str) -> None:
         """Store the HTTP status code alongside the error message."""
-        super().__init__(message)
+        super().__init__(status_code, message)
         self.status_code = status_code
         self.message = message

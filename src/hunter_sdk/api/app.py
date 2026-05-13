@@ -6,38 +6,31 @@ from typing import AsyncIterator
 from fastapi import FastAPI
 
 from hunter_sdk.api.routers.verifications import router as verifications_router
-from hunter_sdk.sdk.client import HunterClient
-from hunter_sdk.settings import (
-    DatabaseSettings,
-    HunterSettings,
-    get_database_settings,
-    get_hunter_settings,
-)
+from hunter_sdk.sdk.transport import HunterTransport
+from hunter_sdk.settings import DatabaseSettings, HunterSettings, get_database_settings, get_hunter_settings
 from hunter_sdk.storage.database import build_engine, build_session_factory
 
 
-@asynccontextmanager
-async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+def _build_runtime_state(app: FastAPI) -> None:
     hunter_settings: HunterSettings = app.state.hunter_settings
     database_settings: DatabaseSettings = app.state.database_settings
-
-    sdk = HunterClient(
+    app.state.transport = HunterTransport(
         api_key=hunter_settings.api_key,
         base_url=hunter_settings.base_url,
         timeout=hunter_settings.timeout,
     )
-    engine = build_engine(database_settings.database_url, echo=database_settings.echo)
-    session_factory = build_session_factory(engine)
+    app.state.engine = build_engine(database_settings.database_url, echo=database_settings.echo)
+    app.state.session_factory = build_session_factory(app.state.engine)
 
-    app.state.hunter_client = sdk
-    app.state.engine = engine
-    app.state.session_factory = session_factory
 
+@asynccontextmanager
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+    _build_runtime_state(app)
     try:
         yield
     finally:
-        await sdk.aclose()
-        await engine.dispose()
+        await app.state.transport.aclose()
+        await app.state.engine.dispose()
 
 
 def create_app(
